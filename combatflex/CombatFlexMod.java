@@ -43,12 +43,15 @@ import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 @Mod(CombatFlexMod.MOD_ID)
 public class CombatFlexMod {
 	public static final String MOD_ID = "cbtflex";
+	private static final int BATTLE_MOMENTUM_TICKS = 20 * 3;
 	private static final int EFFECT_DURATION_TICKS = 40;
 	private static final int REFRESH_THRESHOLD_TICKS = 10;
 	private static final int SECOND_WIND_EFFECT_TICKS = 20 * 20;
 	private static final long ONE_MINUTE_TICKS = 20L * 60L;
 	private static final long THIRTY_SECONDS_TICKS = 20L * 30L;
 	private static final long FIVE_MINUTES_TICKS = 20L * 300L;
+	private static final float EXECUTIONER_HEALTH_THRESHOLD = 0.35F;
+	private static final float EXECUTIONER_DAMAGE_MULTIPLIER = 1.35F;
 
 	public CombatFlexMod(FMLJavaModLoadingContext context) {
 		NetworkHandler.register();
@@ -66,6 +69,10 @@ public class CombatFlexMod {
 		Player player = event.player;
 		if (player.level().isClientSide()) {
 			return;
+		}
+
+		if (player instanceof ServerPlayer serverPlayer) {
+			SpecialSkillFeature.tick(serverPlayer);
 		}
 
 		SkillData.applyPendingHurtMotion(player, player.level().getGameTime());
@@ -101,6 +108,12 @@ public class CombatFlexMod {
 			return;
 		}
 
+		if (event.getEntity() instanceof ServerPlayer dodgingPlayer
+				&& SkillData.isDodgeActive(dodgingPlayer, dodgingPlayer.level().getGameTime())) {
+			event.setAmount(0.0F);
+			return;
+		}
+
 		ServerPlayer attackingPlayer = resolvePlayerAttacker(event.getSource());
 		if (attackingPlayer != null
 				&& attackingPlayer != event.getEntity()
@@ -113,6 +126,20 @@ public class CombatFlexMod {
 						event.getEntity().getZ(), 12, 0.25D, 0.35D, 0.25D, 0.05D);
 			}
 			syncPlayerData(attackingPlayer);
+		}
+
+		if (attackingPlayer != null && attackingPlayer != event.getEntity()) {
+			LivingEntity target = event.getEntity();
+			if (SkillData.hasSkill(attackingPlayer, SkillType.BATTLE_MOMENTUM)) {
+				attackingPlayer.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SPEED, BATTLE_MOMENTUM_TICKS, 0,
+						false, false, false));
+			}
+
+			if (SkillData.hasSkill(attackingPlayer, SkillType.EXECUTIONER)
+					&& target.getMaxHealth() > 0.0F
+					&& target.getHealth() / target.getMaxHealth() <= EXECUTIONER_HEALTH_THRESHOLD) {
+				event.setAmount(event.getAmount() * EXECUTIONER_DAMAGE_MULTIPLIER);
+			}
 		}
 
 		if (!(event.getEntity() instanceof ServerPlayer player)) {
@@ -201,7 +228,8 @@ public class CombatFlexMod {
 		}
 
 		float actualDamageTaken = Math.min(event.getAmount(), player.getHealth());
-		boolean unlockedSkillTree = SkillData.addReceivedDamage(player, actualDamageTaken);
+		boolean unlockedSkillTree = SkillData.addReceivedDamage(player, actualDamageTaken, player.level().getGameTime(),
+				buildDamageFatigueSignature(event.getSource()), buildDamageFatigueLabel(event.getSource()));
 		if (unlockedSkillTree) {
 			player.level().playSound(null, player.getX(), player.getY(), player.getZ(), SoundEvents.TOTEM_USE,
 					SoundSource.PLAYERS, 1.0F, 1.0F);
@@ -212,7 +240,13 @@ public class CombatFlexMod {
 
 	@SubscribeEvent
 	public void onPlayerClone(PlayerEvent.Clone event) {
+		if (event.getOriginal() instanceof ServerPlayer oldPlayer) {
+			SpecialSkillFeature.cancelPending(oldPlayer);
+		}
 		SkillData.copyTo(event.getOriginal(), event.getEntity(), event.isWasDeath());
+		if (event.getEntity() instanceof ServerPlayer newPlayer) {
+			SpecialSkillFeature.cancelPending(newPlayer);
+		}
 	}
 
 	@SubscribeEvent
@@ -319,6 +353,44 @@ public class CombatFlexMod {
 		}
 
 		return signature.toString();
+	}
+
+	private static String buildDamageFatigueSignature(DamageSource damageSource) {
+		Entity fatigueEntity = damageSource.getEntity() != null ? damageSource.getEntity() : damageSource.getDirectEntity();
+		if (fatigueEntity != null) {
+			return "entity=" + fatigueEntity.getUUID();
+		}
+
+		return "environment=" + damageSource.getMsgId();
+	}
+
+	private static String buildDamageFatigueLabel(DamageSource damageSource) {
+		Entity fatigueEntity = damageSource.getEntity() != null ? damageSource.getEntity() : damageSource.getDirectEntity();
+		if (fatigueEntity != null) {
+			return fatigueEntity.getDisplayName().getString();
+		}
+
+		String messageId = damageSource.getMsgId();
+		if (messageId == null || messageId.isBlank()) {
+			return "Unknown";
+		}
+
+		String[] parts = messageId.replace('-', '_').replace('.', '_').split("_");
+		StringBuilder builder = new StringBuilder();
+		for (String part : parts) {
+			if (part.isBlank()) {
+				continue;
+			}
+
+			if (!builder.isEmpty()) {
+				builder.append(' ');
+			}
+			builder.append(Character.toUpperCase(part.charAt(0)));
+			if (part.length() > 1) {
+				builder.append(part.substring(1));
+			}
+		}
+		return builder.isEmpty() ? "Unknown" : builder.toString();
 	}
 
 	private static String resolveToolKind(Entity attacker) {

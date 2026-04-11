@@ -14,5 +14,6 @@ public final class ClientModEvents {
 	@SubscribeEvent
 	public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
 		event.register(ClientKeyMappings.OPEN_SKILL_TREE);
+		event.register(ClientKeyMappings.OPEN_SPECIAL_SKILLS);
 	}
 }

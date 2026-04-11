@@ -6,6 +6,8 @@ import com.OGAS.combatflex.CombatFlexMod;
 import java.util.function.Supplier;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraftforge.network.NetworkEvent;
 
 public class SpendSkillPointPacket {
@@ -33,6 +35,8 @@ public class SpendSkillPointPacket {
 
 			SkillType.fromId(packet.skillId).ifPresent(skillType -> {
 				if (SkillData.unlockSkill(player, skillType)) {
+					player.level().playSound(null, player.getX(), player.getY(), player.getZ(), SoundEvents.PLAYER_LEVELUP,
+							SoundSource.PLAYERS, 0.45F, 1.5F);
 					CombatFlexMod.syncPlayerData(player);
 				}
 			});
