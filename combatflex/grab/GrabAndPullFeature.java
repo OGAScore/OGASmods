@@ -1,6 +1,8 @@
 package com.OGAS.combatflex.grab;
 
 import com.OGAS.combatflex.CombatFlexMod;
+import com.OGAS.combatflex.SkillData;
+import com.OGAS.combatflex.SkillType;
 import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.BlockPos;
@@ -61,14 +63,20 @@ import java.util.UUID;
 public class GrabAndPullFeature {
 	public static final String MOD_ID = CombatFlexMod.MOD_ID;
 	private static final String PROTOCOL_VERSION = "1";
-	static final int HEAVY_ATTACK_HOLD_TICKS = 10;
+	static final int HEAVY_ATTACK_HOLD_TICKS = 6;
 	static final int GRAB_HOLD_TICKS = 4;
 	private static final double TARGET_RANGE = 5.0D;
 	private static final double HEAVY_ATTACK_RANGE = 6.5D;
+	private static final float HEAVY_EXECUTE_HEALTH_THRESHOLD = 0.25F;
 	private static final double LIVING_GRAB_ANCHOR_DISTANCE = 2.25D;
 	private static final double BLOCK_GRAB_ANCHOR_DISTANCE = 1.7D;
 	private static final double BLOCK_GRAB_RIGHT_OFFSET = 1.0D;
 	private static final double DEFAULT_GRAB_ANCHOR_DISTANCE = 2.5D;
+	private static final double LARGE_GRAB_WIDTH_THRESHOLD = 1.2D;
+	private static final double LARGE_GRAB_HEIGHT_THRESHOLD = 2.0D;
+	private static final double LARGE_GRAB_WIDTH_DISTANCE_SCALE = 0.8D;
+	private static final double LARGE_GRAB_HEIGHT_DISTANCE_SCALE = 0.3D;
+	private static final double MAX_LARGE_GRAB_DISTANCE_BONUS = 3.0D;
 	private static final double GRAB_SNAP_DISTANCE_SQR = 9.0D;
 	private static final double MAX_GRAB_RECOVER_DISTANCE_SQR = 1024.0D;
 	private static final double LIVING_GRAB_MAX_VELOCITY_LEAD = 12.0D;
@@ -248,6 +256,10 @@ public class GrabAndPullFeature {
 	}
 
 	private static void performQuickHeavyAttack(ServerPlayer player) {
+		if (!SkillData.hasSkill(player, SkillType.ACTIVE_HEAVY_ATTACK)) {
+			return;
+		}
+
 		if (performGrabbedHeavyAttack(player)) {
 			return;
 		}
@@ -259,6 +271,16 @@ public class GrabAndPullFeature {
 		Entity target = findTargetEntity(player);
 		if (target == null || !target.isAlive()) {
 			destroyTargetBlock(player);
+			return;
+		}
+
+		if (tryExecuteHeavyAttack(player, target)) {
+			Vec3 look = player.getLookAngle().normalize();
+			Vec3 impactPosition = target.position().add(0.0D, target.getBbHeight() * 0.5D, 0.0D);
+			playHeavyAttackEffects(player, impactPosition, look);
+			applyHeavyAttackBurst(player, target, impactPosition, look);
+			player.swing(InteractionHand.MAIN_HAND, true);
+			player.resetAttackStrengthTicker();
 			return;
 		}
 
@@ -282,6 +304,10 @@ public class GrabAndPullFeature {
 	}
 
 	private static void performHeavyAttack(ServerPlayer player) {
+		if (!SkillData.hasSkill(player, SkillType.ACTIVE_CHARGED_HEAVY)) {
+			return;
+		}
+
 		if (performGrabbedHeavyAttack(player)) {
 			return;
 		}
@@ -296,9 +322,14 @@ public class GrabAndPullFeature {
 		Vec3 impactPosition = getHeavyAttackImpactPosition(player, target, blockHit, look);
 
 		if (target != null && target.isAlive()) {
+			if (tryExecuteHeavyAttack(player, target)) {
+				target.push(look.x * 1.8D, 0.45D, look.z * 1.8D);
+				target.hurtMarked = true;
+			} else {
 			damageTarget(target, player.damageSources().sonicBoom(player), HEAVY_ATTACK_DAMAGE);
 			target.push(look.x * 1.5D, 0.45D, look.z * 1.5D);
 			target.hurtMarked = true;
+			}
 
 			Entity durabilityTarget = resolveMultipartParent(target);
 			if (durabilityTarget instanceof LivingEntity livingTarget) {
@@ -349,7 +380,9 @@ public class GrabAndPullFeature {
 
 		Vec3 attackDirection = player.getLookAngle().normalize();
 		Vec3 impactPosition = target.position().add(0.0D, target.getBbHeight() * 0.5D, 0.0D);
-		damageTarget(target, player.damageSources().sonicBoom(player), GRABBED_HEAVY_ATTACK_DAMAGE);
+		if (!tryExecuteHeavyAttack(player, target)) {
+			damageTarget(target, player.damageSources().sonicBoom(player), GRABBED_HEAVY_ATTACK_DAMAGE);
+		}
 		target.push(attackDirection.x * 1.6D, 0.2D, attackDirection.z * 1.6D);
 		target.hurtMarked = true;
 		playGrabbedHeavyAttackEffects(player, impactPosition, attackDirection);
@@ -406,9 +439,9 @@ public class GrabAndPullFeature {
 
 	private static void startGrab(ServerPlayer player) {
 		Entity target = findTargetEntity(player);
-		if (target != null && target.isAlive() && target != player && canGrabEntity(target)) {
-			target.setNoGravity(true);
-			target.noPhysics = true;
+		if (target != null && target.isAlive() && target != player && canGrabEntity(target)
+				&& SkillData.hasSkill(player, SkillType.ACTIVE_ENTITY_GRAB)) {
+			applyGrabState(target);
 			target.setDeltaMovement(Vec3.ZERO);
 			forceTargetInFront(player, target);
 			ACTIVE_GRABS.put(player.getUUID(), target.getId());
@@ -417,6 +450,9 @@ public class GrabAndPullFeature {
 		}
 
 		GrabbedBlockData grabbedBlock = grabTargetBlock(player);
+		if (!SkillData.hasSkill(player, SkillType.ACTIVE_BLOCK_CONTROL)) {
+			return;
+		}
 		if (grabbedBlock == null) {
 			return;
 		}
@@ -436,6 +472,10 @@ public class GrabAndPullFeature {
 		ItemStack stack = player.getItemInHand(hand);
 		SpecialThrownItemKind specialThrownItemKind = SpecialThrownItemKind.fromStack(stack);
 		if (specialThrownItemKind != null) {
+			if (!SkillData.hasSkill(player, SkillType.ACTIVE_SPECIAL_THROW)) {
+				return false;
+			}
+
 			Vec3 throwOrigin = getThrowOrigin(player, false);
 			Vec3 throwVelocity = getSpecialThrowVelocity(player, specialThrownItemKind);
 			ThrownItemEntity thrownItem = spawnThrownItem(player.serverLevel(), stack.copyWithCount(1), specialThrownItemKind, throwOrigin, throwVelocity, player);
@@ -453,6 +493,10 @@ public class GrabAndPullFeature {
 		}
 
 		if (!(stack.getItem() instanceof BlockItem blockItem)) {
+			return false;
+		}
+
+		if (!SkillData.hasSkill(player, SkillType.ACTIVE_BLOCK_CONTROL)) {
 			return false;
 		}
 
@@ -569,8 +613,7 @@ public class GrabAndPullFeature {
 			return;
 		}
 
-		target.setNoGravity(false);
-		target.noPhysics = false;
+		clearGrabState(target);
 
 		double throwDistance = getThrowDistance(target, targetId);
 		boolean isBlockThrow = target instanceof FallingBlockEntity;
@@ -688,6 +731,23 @@ public class GrabAndPullFeature {
 
 	private static boolean canGrabEntity(Entity target) {
 		return !(resolveMultipartParent(target) instanceof EnderDragon);
+	}
+
+	private static boolean tryExecuteHeavyAttack(ServerPlayer player, Entity target) {
+		if (!SkillData.hasSkill(player, SkillType.ACTIVE_EXECUTION)) {
+			return false;
+		}
+
+		Entity resolvedTarget = resolveMultipartParent(target);
+		if (!(resolvedTarget instanceof LivingEntity livingTarget) || livingTarget.getMaxHealth() <= 0.0F) {
+			return false;
+		}
+
+		if (livingTarget.getHealth() / livingTarget.getMaxHealth() > HEAVY_EXECUTE_HEALTH_THRESHOLD) {
+			return false;
+		}
+
+		return damageTarget(resolvedTarget, player.damageSources().sonicBoom(player), Float.MAX_VALUE);
 	}
 
 	private static boolean damageTarget(Entity target, DamageSource damageSource, float damageAmount) {
@@ -902,7 +962,7 @@ public class GrabAndPullFeature {
 			double knockback = (BLOCK_EXPLOSION_MIN_KNOCKBACK + ((damageMultiplier - BLOCK_EXPLOSION_MIN_DAMAGE_MULTIPLIER) / (1.0D - BLOCK_EXPLOSION_MIN_DAMAGE_MULTIPLIER) * (BLOCK_EXPLOSION_MAX_KNOCKBACK - BLOCK_EXPLOSION_MIN_KNOCKBACK)))
 					* BLOCK_EXPLOSION_IMPACT_KNOCKBACK_MULTIPLIER;
 			living.push(pushDirection.x * knockback, 0.12D + (0.22D * damageMultiplier), pushDirection.z * knockback);
-			living.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, BLOCK_EXPLOSION_IMPACT_SLOW_TICKS, BLOCK_EXPLOSION_IMPACT_SLOW_AMPLIFIER, false, false, true));
+			living.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, BLOCK_EXPLOSION_IMPACT_SLOW_TICKS, BLOCK_EXPLOSION_IMPACT_SLOW_AMPLIFIER, false, false, false));
 			living.hurtMarked = true;
 		}
 	}
@@ -1237,7 +1297,7 @@ public class GrabAndPullFeature {
 			double knockback = (BLOCK_EXPLOSION_MIN_KNOCKBACK + ((damageMultiplier - BLOCK_EXPLOSION_MIN_DAMAGE_MULTIPLIER) / (1.0D - BLOCK_EXPLOSION_MIN_DAMAGE_MULTIPLIER) * (BLOCK_EXPLOSION_MAX_KNOCKBACK - BLOCK_EXPLOSION_MIN_KNOCKBACK)))
 					* BLOCK_EXPLOSION_IMPACT_KNOCKBACK_MULTIPLIER;
 			living.push(pushDirection.x * knockback, 0.12D + (0.22D * damageMultiplier), pushDirection.z * knockback);
-			living.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, BLOCK_EXPLOSION_IMPACT_SLOW_TICKS, BLOCK_EXPLOSION_IMPACT_SLOW_AMPLIFIER, false, false, true));
+			living.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, BLOCK_EXPLOSION_IMPACT_SLOW_TICKS, BLOCK_EXPLOSION_IMPACT_SLOW_AMPLIFIER, false, false, false));
 			living.hurtMarked = true;
 		}
 	}
@@ -1409,8 +1469,7 @@ public class GrabAndPullFeature {
 			ACTIVE_GRABS.remove(player.getUUID());
 			GRABBED_BLOCK_BLASTS.remove(target.getId());
 			GRABBED_BLOCK_DAMAGES.remove(target.getId());
-			target.setNoGravity(false);
-			target.noPhysics = false;
+			clearGrabState(target);
 			return;
 		}
 
@@ -1419,7 +1478,7 @@ public class GrabAndPullFeature {
 		}
 
 		if (target instanceof FallingBlockEntity fallingBlock) {
-			fallingBlock.setNoGravity(true);
+			applyGrabState(fallingBlock);
 			tickBlockGrab(player, fallingBlock);
 			applyCarryFire(player, target);
 			target.fallDistance = 0.0F;
@@ -1427,8 +1486,7 @@ public class GrabAndPullFeature {
 			return;
 		}
 
-		target.setNoGravity(true);
-		target.noPhysics = true;
+		applyGrabState(target);
 		Vec3 desiredPos = getGrabbedTargetPosition(player, target);
 		Vec3 currentPos = target.position();
 		Vec3 step = desiredPos.subtract(currentPos);
@@ -1445,8 +1503,7 @@ public class GrabAndPullFeature {
 	}
 
 	private static void tickBlockGrab(ServerPlayer player, FallingBlockEntity target) {
-		target.setNoGravity(true);
-		target.noPhysics = true;
+		applyGrabState(target);
 		Vec3 desiredPos = getGrabbedTargetPosition(player, target);
 		Vec3 currentPos = target.position();
 		Vec3 delta = desiredPos.subtract(currentPos);
@@ -1469,12 +1526,12 @@ public class GrabAndPullFeature {
 	}
 
 	private static Vec3 getGrabbedTargetPosition(ServerPlayer player, Entity target) {
-		double anchorDistance = DEFAULT_GRAB_ANCHOR_DISTANCE;
+		double anchorDistance = DEFAULT_GRAB_ANCHOR_DISTANCE + getLargeGrabDistanceBonus(target);
 		Vec3 anchor = getGrabAnchor(player, anchorDistance, false);
 		if (target instanceof FallingBlockEntity) {
 			anchor = getGrabAnchor(player, BLOCK_GRAB_ANCHOR_DISTANCE, false).add(getRightVector(player).scale(BLOCK_GRAB_RIGHT_OFFSET));
 		} else if (target instanceof LivingEntity) {
-			anchor = getGrabAnchor(player, LIVING_GRAB_ANCHOR_DISTANCE, true);
+			anchor = getGrabAnchor(player, LIVING_GRAB_ANCHOR_DISTANCE + getLargeGrabDistanceBonus(target), true);
 		}
 
 		double targetY = anchor.y - (target.getBbHeight() * 0.5D);
@@ -1487,6 +1544,30 @@ public class GrabAndPullFeature {
 			livingTarget.setYBodyRot(player.getYRot());
 			livingTarget.setYHeadRot(player.getYRot());
 		}
+	}
+
+	private static void applyGrabState(Entity target) {
+		target.setNoGravity(true);
+		target.noPhysics = shouldDisableGrabCollision(target);
+	}
+
+	private static void clearGrabState(Entity target) {
+		target.setNoGravity(false);
+		target.noPhysics = false;
+	}
+
+	private static boolean shouldDisableGrabCollision(Entity target) {
+		return target instanceof FallingBlockEntity || isLargeGrabTarget(target);
+	}
+
+	private static boolean isLargeGrabTarget(Entity target) {
+		return target.getBbWidth() > LARGE_GRAB_WIDTH_THRESHOLD || target.getBbHeight() > LARGE_GRAB_HEIGHT_THRESHOLD;
+	}
+
+	private static double getLargeGrabDistanceBonus(Entity target) {
+		double widthBonus = Math.max(0.0D, target.getBbWidth() - LARGE_GRAB_WIDTH_THRESHOLD) * LARGE_GRAB_WIDTH_DISTANCE_SCALE;
+		double heightBonus = Math.max(0.0D, target.getBbHeight() - LARGE_GRAB_HEIGHT_THRESHOLD) * LARGE_GRAB_HEIGHT_DISTANCE_SCALE;
+		return Math.min(MAX_LARGE_GRAB_DISTANCE_BONUS, widthBonus + heightBonus);
 	}
 
 	private static Vec3 getGrabAnchor(ServerPlayer player, double anchorDistance, boolean includeVelocityLead) {

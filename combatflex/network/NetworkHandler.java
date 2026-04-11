@@ -2,7 +2,9 @@ package com.OGAS.combatflex.network;
 
 import com.OGAS.combatflex.CombatFlexMod;
 import com.OGAS.combatflex.network.packet.SpendSkillPointPacket;
+import com.OGAS.combatflex.network.packet.SpendSpecialSkillPointPacket;
 import com.OGAS.combatflex.network.packet.SyncSkillDataPacket;
+import com.OGAS.combatflex.network.packet.UseSpecialSkillPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.NetworkRegistry;
@@ -29,8 +31,12 @@ public final class NetworkHandler {
 
 		CHANNEL.registerMessage(packetId++, SpendSkillPointPacket.class, SpendSkillPointPacket::encode,
 				SpendSkillPointPacket::decode, SpendSkillPointPacket::handle);
+		CHANNEL.registerMessage(packetId++, SpendSpecialSkillPointPacket.class, SpendSpecialSkillPointPacket::encode,
+				SpendSpecialSkillPointPacket::decode, SpendSpecialSkillPointPacket::handle);
 		CHANNEL.registerMessage(packetId++, SyncSkillDataPacket.class, SyncSkillDataPacket::encode,
 				SyncSkillDataPacket::decode, SyncSkillDataPacket::handle);
+		CHANNEL.registerMessage(packetId++, UseSpecialSkillPacket.class, UseSpecialSkillPacket::encode,
+				UseSpecialSkillPacket::decode, UseSpecialSkillPacket::handle);
 		registered = true;
 	}
 
